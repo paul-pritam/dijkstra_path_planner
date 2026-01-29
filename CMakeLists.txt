@@ -12,6 +12,29 @@ find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 
+include_directories(include)
+
+set(dependencies
+  rclcpp
+  nav_msgs
+  geometry_msgs
+  tf2_ros
+)
+
+add_executable(dijkstra_planner src/dijkstra.cpp)
+ament_target_dependencies(dijkstra_planner ${dependencies})
+
+install(
+  DIRECTORY include
+  DESTINATION include
+)
+
+install(TARGETS
+  dijkstra_planner
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
@@ -24,4 +47,6 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+ament_export_include_directories(include)
+ament_export_dependencies(${dependencies})
 ament_package()
