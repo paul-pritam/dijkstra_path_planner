@@ -1,8 +1,7 @@
 #include "../include/dijkstra_planning/dijkstra.hpp"
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <rmw/qos_profiles.h>
 #include <queue>
-
+#include <algorithm> 
 
 namespace dijkstra{
 
@@ -12,7 +11,6 @@ namespace dijkstra{
         tf_listener_= std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
         rclcpp::QoS map_qos(10);
-
         map_qos.transient_local();
         map_qos.reliable();
         map_qos.keep_last(1);
@@ -30,21 +28,15 @@ namespace dijkstra{
         );
 
         //publishers
-        path_pub_ = this-> create_publisher<nav_msgs::msg::Path>("/dijkstra/path",10);
-        map_pub_ = this-> create_publisher<nav_msgs::msg::OccupancyGrid>("/dijkstra/visited_map",10);
-
-
-
+        path_pub_ = this-> create_publisher<nav_msgs::msg::Path>("/dijkstra/path",map_qos);
+        map_pub_ = this-> create_publisher<nav_msgs::msg::OccupancyGrid>("/dijkstra/visited_map",map_qos);
     }
 
-
-
     void DijkstraPlanner::map_callback(const nav_msgs::msg::OccupancyGrid::SharedPtr map){
-        
         map_ = map;
         visited_map_.header.frame_id=map->header.frame_id;
         visited_map_.info = map->info;
-        visited_map_.data = std::vector<int8_t>(visited_map_.info.height*visited_map_.info.width,-1); //init visited_map_ || -1 means unvisited
+        visited_map_.data = std::vector<int8_t>(visited_map_.info.height*visited_map_.info.width,-1); 
     }
 
     void DijkstraPlanner::goal_callback(const geometry_msgs::msg::PoseStamped::SharedPtr pose_){
@@ -54,10 +46,10 @@ namespace dijkstra{
             return;
         }
 
-        visited_map_.data = std::vector<int8_t>(visited_map_.info.height * visited_map_.info.width, -1); //reset visited_map_ before each goal planning run || clears results from previous goals
+       
+        visited_map_.data = std::vector<int8_t>(visited_map_.info.height * visited_map_.info.width, -1); //init visited_map_ || -1 means unvisited 
 
         geometry_msgs::msg::TransformStamped map_to_base_tf;
-
         try{
             map_to_base_tf = tf_buffer_->lookupTransform(map_->header.frame_id, "base_link", tf2::TimePointZero);
         }catch(const tf2::TransformException &ex){
@@ -67,7 +59,7 @@ namespace dijkstra{
 
         geometry_msgs::msg::Pose map_to_base_pose;
         map_to_base_pose.position.x = map_to_base_tf.transform.translation.x;
-        map_to_base_pose.position.x = map_to_base_tf.transform.translation.x;
+        map_to_base_pose.position.y = map_to_base_tf.transform.translation.y;
         map_to_base_pose.orientation = map_to_base_tf.transform.rotation;
 
         auto path = plan(map_to_base_pose, pose_->pose); //start->goal
@@ -79,56 +71,95 @@ namespace dijkstra{
         else{
             RCLCPP_WARN(this->get_logger(), "no path to goal");
         }
-        
     }
 
     nav_msgs::msg::Path DijkstraPlanner::plan(const geometry_msgs::msg::Pose &start_pose ,const geometry_msgs::msg::Pose &goal_pose) {
 
-        std::vector<std::pair<int, int>> explore_dir={
-            {-1,0},{1,0},{0,-1},{0,1}
-        };
+        std::vector<std::pair<int, int>> explore_dir={{-1,0},{1,0},{0,-1},{0,1}};
 
         std::priority_queue<GraphNode, std::vector<GraphNode>, std::greater<GraphNode>> pending_nodes;
-        std::vector <GraphNode> visited_nodes;
+        
+        // Use boolean grid for O(1) 
+        std::vector<bool> visited_grid(map_->info.width * map_->info.height, false);
 
-        pending_nodes.push(worldToGrid(start_pose));
+        GraphNode start_node = worldToGrid(start_pose);
+        GraphNode goal_node = worldToGrid(goal_pose);
+
+        // Basic bounds check
+        if (!poseOnMap(start_node) || !poseOnMap(goal_node)) {
+            return nav_msgs::msg::Path();
+        }
+
+        // Add start node
+        start_node.cost = 0;
+        pending_nodes.push(start_node);
+        visited_grid[poseToCell(start_node)] = true;
 
         GraphNode active_node; //current node
+        bool found = false;
+
         while (!pending_nodes.empty() && rclcpp::ok())
         {
             active_node = pending_nodes.top(); //best cost in the pending nodes
-            pending_nodes.pop(); //pop the best cost
+            pending_nodes.pop(); //pop the best cost 
 
-            if(worldToGrid(goal_pose) == active_node){
-                break; //check if goal reached
+            // Check goal
+            if(active_node.x == goal_node.x && active_node.y == goal_node.y){
+                found = true;
+                break; 
             }
 
             //explore the 4 neighbors from the active_node
-            for (const auto &dir : explore_dir){
-                GraphNode new_node;
-                if (std::find(visited_nodes.begin(), visited_nodes.end(),new_node) == visited_nodes.end() && poseOnMap(new_node) && map_->data.at(poseToCell(new_node)) == 0){
+
+            for (const auto & dir : explore_dir){
+                GraphNode new_node = active_node + dir;
+                
+                // Bound Check
+                if(!poseOnMap(new_node)) continue;
+
+                unsigned int idx = poseToCell(new_node);
+
+                // Check visited using boolean grid
+                if(visited_grid[idx]) continue;
+
+                // Obstacle Check (Allows 0, -1, and < 50)
+                int8_t val = map_->data[idx];
+                bool is_obstacle = (val == 100 || val >= 50);
+
+                if (!is_obstacle) {
                     new_node.cost = active_node.cost + 1;
                     new_node.prev = std::make_shared<GraphNode>(active_node);
+                    
                     pending_nodes.push(new_node);
-                    visited_nodes.push_back(new_node);
+                    visited_grid[idx] = true; // Mark visited immediately
+
+                    visited_map_.data[idx]= 10;//blue
                 }
             }
-
-            visited_map_.data.at(poseToCell(active_node)) = 10; //bluw
-            map_pub_->publish(visited_map_);
         }
         
+        // Publish visited map ONCE at the end
+        map_pub_->publish(visited_map_);
+
         nav_msgs::msg::Path path;
         path.header.frame_id = map_->header.frame_id;
-        while (active_node.prev && rclcpp::ok()){
-            geometry_msgs::msg::Pose  last_pose = gridToWorld(active_node);
-            geometry_msgs::msg::PoseStamped last_pose_stamped;
-            last_pose_stamped.header.frame_id = map_->header.frame_id;
-            last_pose_stamped.pose = last_pose;
-            path.poses.push_back(last_pose_stamped);
-            active_node = *active_node.prev;
+        
+        if (found) {
+            GraphNode* current_ptr = &active_node;
+            while (current_ptr != nullptr && rclcpp::ok()){
+                geometry_msgs::msg::Pose last_pose = gridToWorld(*current_ptr);
+                geometry_msgs::msg::PoseStamped last_pose_stamped;
+                last_pose_stamped.header.frame_id = map_->header.frame_id;
+                last_pose_stamped.pose = last_pose;
+                path.poses.push_back(last_pose_stamped);
+                
+                if(current_ptr->prev) 
+                    current_ptr = current_ptr->prev.get();
+                else 
+                    break;
+            }
+            std::reverse(path.poses.begin(), path.poses.end());
         }
-        std::reverse(path.poses.begin(), path.poses.end());
         return path;
     }
 
@@ -154,5 +185,11 @@ namespace dijkstra{
     }
 }
 
-            
-
+int main(int argc, char **argv)
+{
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared<dijkstra::DijkstraPlanner>();
+    rclcpp::spin(node);
+    rclcpp::shutdown();
+    return 0;
+}

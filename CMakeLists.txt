@@ -25,7 +25,7 @@ add_executable(dijkstra_planner src/dijkstra.cpp)
 ament_target_dependencies(dijkstra_planner ${dependencies})
 
 install(
-  DIRECTORY include
+  DIRECTORY include/
   DESTINATION include
 )
 
