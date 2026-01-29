@@ -1,6 +1,8 @@
 #include "../include/dijkstra_planning/dijkstra.hpp"
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <rmw/qos_profiles.h>
+#include <queue>
+
 
 namespace dijkstra{
 
@@ -70,8 +72,87 @@ namespace dijkstra{
 
         auto path = plan(map_to_base_pose, pose_->pose); //start->goal
 
-        if 
+        if (!path.poses.empty()){
+            RCLCPP_INFO(this->get_logger(),"shortest path found");
+            path_pub_->publish(path);
+        }
+        else{
+            RCLCPP_WARN(this->get_logger(), "no path to goal");
+        }
         
     }
 
+    nav_msgs::msg::Path DijkstraPlanner::plan(const geometry_msgs::msg::Pose &start_pose ,const geometry_msgs::msg::Pose &goal_pose) {
+
+        std::vector<std::pair<int, int>> explore_dir={
+            {-1,0},{1,0},{0,-1},{0,1}
+        };
+
+        std::priority_queue<GraphNode, std::vector<GraphNode>, std::greater<GraphNode>> pending_nodes;
+        std::vector <GraphNode> visited_nodes;
+
+        pending_nodes.push(worldToGrid(start_pose));
+
+        GraphNode active_node; //current node
+        while (!pending_nodes.empty() && rclcpp::ok())
+        {
+            active_node = pending_nodes.top(); //best cost in the pending nodes
+            pending_nodes.pop(); //pop the best cost
+
+            if(worldToGrid(goal_pose) == active_node){
+                break; //check if goal reached
+            }
+
+            //explore the 4 neighbors from the active_node
+            for (const auto &dir : explore_dir){
+                GraphNode new_node;
+                if (std::find(visited_nodes.begin(), visited_nodes.end(),new_node) == visited_nodes.end() && poseOnMap(new_node) && map_->data.at(poseToCell(new_node)) == 0){
+                    new_node.cost = active_node.cost + 1;
+                    new_node.prev = std::make_shared<GraphNode>(active_node);
+                    pending_nodes.push(new_node);
+                    visited_nodes.push_back(new_node);
+                }
+            }
+
+            visited_map_.data.at(poseToCell(active_node)) = 10; //bluw
+            map_pub_->publish(visited_map_);
+        }
+        
+        nav_msgs::msg::Path path;
+        path.header.frame_id = map_->header.frame_id;
+        while (active_node.prev && rclcpp::ok()){
+            geometry_msgs::msg::Pose  last_pose = gridToWorld(active_node);
+            geometry_msgs::msg::PoseStamped last_pose_stamped;
+            last_pose_stamped.header.frame_id = map_->header.frame_id;
+            last_pose_stamped.pose = last_pose;
+            path.poses.push_back(last_pose_stamped);
+            active_node = *active_node.prev;
+        }
+        std::reverse(path.poses.begin(), path.poses.end());
+        return path;
+    }
+
+    GraphNode DijkstraPlanner::worldToGrid (const geometry_msgs::msg::Pose &pose){
+        int grid_x = static_cast<int>((pose.position.x - map_->info.origin.position.x) / map_->info.resolution);
+        int grid_y = static_cast<int>((pose.position.y - map_->info.origin.position.y) / map_->info.resolution);       
+        return GraphNode(grid_x,grid_y); 
+    }
+
+    bool DijkstraPlanner::poseOnMap (const GraphNode &node){
+        return node.x < static_cast<int>(map_->info.width) && node.x >= 0 && node.y < static_cast<int>(map_->info.height) && node.y >= 0;
+    }
+
+    unsigned int DijkstraPlanner::poseToCell(const GraphNode &node){
+        return map_ -> info.width * node.y + node.x;
+    }
+
+    geometry_msgs::msg::Pose DijkstraPlanner::gridToWorld(const GraphNode &node){
+        geometry_msgs::msg::Pose pose;
+        pose.position.x = node.x * map_->info.resolution + map_->info.origin.position.x;
+        pose.position.y = node.y * map_->info.resolution + map_->info.origin.position.y;
+        return pose;
+    }
 }
+
+            
+

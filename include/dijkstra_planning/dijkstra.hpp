@@ -7,6 +7,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
+#include "geometry_msgs/msg/pose.hpp"
 
 
 namespace dijkstra{
@@ -57,7 +58,13 @@ namespace dijkstra{
 
             //for robot position
             std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
-            std::unique_ptr<tf2_ros::Buffer> tf_buffer_;      
+            std::unique_ptr<tf2_ros::Buffer> tf_buffer_;  
+            
+            GraphNode worldToGrid (const geometry_msgs::msg::Pose &pose);
+            bool poseOnMap(const GraphNode &node);
+            unsigned int poseToCell(const GraphNode &node);
+            geometry_msgs::msg::Pose gridToWorld(const GraphNode &node);
+
     };
 
 } //namespace
